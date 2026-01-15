@@ -755,18 +755,86 @@ class ActionModule(ActionBase):
             installed_updates.update(current_updates)
 
             if current_updates and not new_updates:
+                # Before flagging as a loop, check if these updates are actually installed
+                # This handles cases where Microsoft re-uses KB numbers with different UpdateIDs
+                # (e.g., KB5007651 on Windows Server 2025). This logic is safe on all Windows
+                # versions as it only makes loop detection more lenient.
+                updates_to_flag = []
                 for update_id in current_updates:
-                    self._install_results[update_id]['result_code'] = 4
-                    self._install_results[update_id]['hresult'] = -1
+                    update_info = self._updates.get(update_id)
+                    if update_info:
+                        kb_numbers = update_info.get('kb', [])
+                        # Check if there's a newer version of the same KB in the current search results
+                        # OR if a version with the same KB was successfully installed in a previous round
+                        is_newer_version_available = False
+                        
+                        # First, check current round's search results
+                        for other_update_id, other_update_info in update_result.updates.items():
+                            if other_update_id != update_id:
+                                other_kb_numbers = other_update_info.get('kb', [])
+                                # Same KB number but different UpdateID means newer version exists
+                                if kb_numbers and set(kb_numbers) & set(other_kb_numbers):
+                                    is_newer_version_available = True
+                                    display.vv(
+                                        f"Update {update_id} (KB: {kb_numbers}) has newer version {other_update_id} "
+                                        f"available in current search. Assuming previous version is installed.",
+                                        host=task_vars.get('inventory_hostname', None)
+                                    )
+                                    break
+                        
+                        # If not found in current round, check if same KB was successfully installed in previous rounds
+                        if not is_newer_version_available and kb_numbers:
+                            for other_update_id, other_update_info in self._updates.items():
+                                if other_update_id != update_id:
+                                    other_kb_numbers = other_update_info.get('kb', [])
+                                    # Same KB number but different UpdateID
+                                    if set(kb_numbers) & set(other_kb_numbers):
+                                        # Check if this other version was successfully installed
+                                        other_install_result = self._install_results.get(other_update_id)
+                                        if other_install_result and other_install_result.get('result_code') == 2:
+                                            is_newer_version_available = True
+                                            display.vv(
+                                                f"Update {update_id} (KB: {kb_numbers}) has newer version {other_update_id} "
+                                                f"that was successfully installed in a previous round. "
+                                                f"Assuming previous version is installed.",
+                                                host=task_vars.get('inventory_hostname', None)
+                                            )
+                                            break
+                        
+                        if not is_newer_version_available:
+                            updates_to_flag.append(update_id)
 
-                result['failed'] = True
-                result['msg'] = (
-                    'An update loop was detected, this could be caused by an update being rolled back during a '
-                    'reboot or the Windows Update API incorrectly reporting a failed update as being successful.'
-                    'Check the Windows Updates logs on the host to gather more information. Updates in the reboot '
-                    f'loop are: {", ".join(current_updates)}'
-                )
-                break
+                if updates_to_flag:
+                    for update_id in updates_to_flag:
+                        self._install_results[update_id]['result_code'] = 4
+                        self._install_results[update_id]['hresult'] = -1
+
+                    result['failed'] = True
+                    result['msg'] = (
+                        'An update loop was detected, this could be caused by an update being rolled back during a '
+                        'reboot or the Windows Update API incorrectly reporting a failed update as being successful.'
+                        'Check the Windows Updates logs on the host to gather more information. Updates in the reboot '
+                        f'loop are: {", ".join(updates_to_flag)}'
+                    )
+                    break
+                else:
+                    # All updates have newer versions available, mark as successful
+                    display.vv(
+                        "Update loop detected but newer versions available (re-used KB numbers). "
+                        "Marking previous versions as successful.",
+                        host=task_vars.get('inventory_hostname', None)
+                    )
+                    for update_id in current_updates:
+                        if update_id in self._install_results:
+                            if self._install_results[update_id].get('result_code') == 4:
+                                self._install_results[update_id]['result_code'] = 2
+                                self._install_results[update_id]['hresult'] = 0
+                    
+                    # CRITICAL: Remove these updates from selected_updates to prevent re-selection
+                    # This prevents infinite loops if Windows keeps reporting them as needed
+                    for update_id in current_updates:
+                        update_result.selected_updates.discard(update_id)
+                        self._selected_updates.discard(update_id)
 
             reboot_required = result['reboot_required'] = update_result.reboot_required
             if update_result.changed:
