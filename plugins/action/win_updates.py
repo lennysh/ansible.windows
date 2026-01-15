@@ -768,41 +768,49 @@ class ActionModule(ActionBase):
                         # OR if a version with the same KB was successfully installed in a previous round
                         is_newer_version_available = False
                         
-                        # First, check current round's search results
-                        for other_update_id, other_update_info in update_result.updates.items():
-                            if other_update_id != update_id:
-                                other_kb_numbers = other_update_info.get('kb', [])
-                                # Same KB number but different UpdateID means newer version exists
-                                if kb_numbers and set(kb_numbers) & set(other_kb_numbers):
-                                    is_newer_version_available = True
-                                    display.vv(
-                                        f"Update {update_id} (KB: {kb_numbers}) has newer version {other_update_id} "
-                                        f"available in current search. Assuming previous version is installed.",
-                                        host=task_vars.get('inventory_hostname', None)
-                                    )
-                                    break
-                        
-                        # If not found in current round, check if same KB was successfully installed in previous rounds
-                        if not is_newer_version_available and kb_numbers:
-                            for other_update_id, other_update_info in self._updates.items():
+                        if kb_numbers:
+                            # First, check current round's search results
+                            for other_update_id, other_update_info in update_result.updates.items():
                                 if other_update_id != update_id:
                                     other_kb_numbers = other_update_info.get('kb', [])
-                                    # Same KB number but different UpdateID
+                                    # Same KB number but different UpdateID means newer version exists
                                     if set(kb_numbers) & set(other_kb_numbers):
-                                        # Check if this other version was successfully installed
-                                        other_install_result = self._install_results.get(other_update_id)
-                                        if other_install_result and other_install_result.get('result_code') == 2:
-                                            is_newer_version_available = True
-                                            display.vv(
-                                                f"Update {update_id} (KB: {kb_numbers}) has newer version {other_update_id} "
-                                                f"that was successfully installed in a previous round. "
-                                                f"Assuming previous version is installed.",
-                                                host=task_vars.get('inventory_hostname', None)
-                                            )
-                                            break
+                                        is_newer_version_available = True
+                                        display.vv(
+                                            f"Update {update_id} (KB: {kb_numbers}) has newer version {other_update_id} "
+                                            f"available in current search. Assuming previous version is installed.",
+                                            host=task_vars.get('inventory_hostname', None)
+                                        )
+                                        break
+                            
+                            # If not found in current round, check if same KB was successfully installed in previous rounds
+                            if not is_newer_version_available:
+                                for other_update_id, other_update_info in self._updates.items():
+                                    if other_update_id != update_id:
+                                        other_kb_numbers = other_update_info.get('kb', [])
+                                        # Same KB number but different UpdateID
+                                        if set(kb_numbers) & set(other_kb_numbers):
+                                            # Check if this other version was successfully installed
+                                            other_install_result = self._install_results.get(other_update_id)
+                                            if other_install_result and other_install_result.get('result_code') == 2:
+                                                is_newer_version_available = True
+                                                display.vv(
+                                                    f"Update {update_id} (KB: {kb_numbers}) has newer version {other_update_id} "
+                                                    f"that was successfully installed in a previous round. "
+                                                    f"Assuming previous version is installed.",
+                                                    host=task_vars.get('inventory_hostname', None)
+                                                )
+                                                break
                         
                         if not is_newer_version_available:
                             updates_to_flag.append(update_id)
+                    else:
+                        # Update info not found - this shouldn't happen, but flag it to be safe
+                        display.vv(
+                            f"Update {update_id} not found in update info, flagging as potential loop.",
+                            host=task_vars.get('inventory_hostname', None)
+                        )
+                        updates_to_flag.append(update_id)
 
                 if updates_to_flag:
                     for update_id in updates_to_flag:
