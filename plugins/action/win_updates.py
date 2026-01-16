@@ -802,8 +802,22 @@ class ActionModule(ActionBase):
                                                 )
                                                 break
                         
+                        # If no newer version found, check if THIS specific UpdateID was successfully installed
+                        # in a previous round. Only mark as successful if the same UpdateID was installed.
                         if not is_newer_version_available:
-                            updates_to_flag.append(update_id)
+                            # Check if this UpdateID was successfully installed in a previous round
+                            previous_install_result = self._install_results.get(update_id)
+                            if previous_install_result and previous_install_result.get('result_code') == 2:
+                                # This UpdateID was successfully installed before, mark as successful
+                                is_newer_version_available = True
+                                display.vv(
+                                    f"Update {update_id} (KB: {kb_numbers}) was successfully installed in a "
+                                    f"previous round. Marking as successful.",
+                                    host=task_vars.get('inventory_hostname', None)
+                                )
+                            else:
+                                # This UpdateID was not successfully installed, flag as loop
+                                updates_to_flag.append(update_id)
                     else:
                         # Update info not found - this shouldn't happen, but flag it to be safe
                         display.vv(
@@ -826,17 +840,17 @@ class ActionModule(ActionBase):
                     )
                     break
                 else:
-                    # All updates have newer versions available, mark as successful
+                    # All updates have newer versions available OR the same UpdateID was successfully installed
                     display.vv(
-                        "Update loop detected but newer versions available (re-used KB numbers). "
-                        "Marking previous versions as successful.",
+                        "Update loop detected but newer versions available (re-used KB numbers) or "
+                        "same UpdateID was successfully installed. Marking as successful.",
                         host=task_vars.get('inventory_hostname', None)
                     )
+                    # Mark updates as successful - they should already be in install_results from the install attempt
                     for update_id in current_updates:
                         if update_id in self._install_results:
-                            if self._install_results[update_id].get('result_code') == 4:
-                                self._install_results[update_id]['result_code'] = 2
-                                self._install_results[update_id]['hresult'] = 0
+                            self._install_results[update_id]['result_code'] = 2
+                            self._install_results[update_id]['hresult'] = 0
                     
                     # CRITICAL: Remove these updates from selected_updates to prevent re-selection
                     # This prevents infinite loops if Windows keeps reporting them as needed
